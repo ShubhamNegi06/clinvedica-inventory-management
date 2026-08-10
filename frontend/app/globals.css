@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+}
+
+body {
+  @apply bg-gray-50 text-gray-900 antialiased;
+}
+
+/* Consistent focus ring across all interactive elements, in brand color */
+:focus-visible {
+  outline: 2px solid #a32626;
+  outline-offset: 2px;
+}
+
+::selection {
+  background-color: #f3d4d4;
+}
