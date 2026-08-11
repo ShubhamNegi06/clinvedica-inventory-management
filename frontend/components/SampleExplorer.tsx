@@ -5,23 +5,24 @@
  *   - /inventories (master, no siteId prop = all accessible sites)
  *   - /inventories/[siteId] (a single site, admin/manager)
  *   - /samples (site user's own inventory — siteId is their own site_id)
- * Keeping this in one component means search/tag-filter/export/bulk-select
+ * Keeping this in one component means search/filter/export/bulk-select
  * behavior never drifts between the three contexts it's used in.
  */
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { listSamples, deleteSample, exportSamples } from "@/lib/resources";
+import { listSamples, deleteSample, exportSamples, listFieldDefinitions } from "@/lib/resources";
 import { ApiError } from "@/lib/api";
-import type { Sample } from "@/lib/types";
-import { TagFilterInput } from "./TagFilterInput";
+import type { FieldDefinition, FieldFilter, Sample } from "@/lib/types";
+import { FieldFilterInput } from "./FieldFilterInput";
 
 export function SampleExplorer({ siteId, title }: { siteId?: string; title: string }) {
   const [samples, setSamples] = useState<Sample[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [tags, setTags] = useState<string[]>([]);
+  const [fieldDefs, setFieldDefs] = useState<FieldDefinition[]>([]);
+  const [filters, setFilters] = useState<FieldFilter[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -29,11 +30,21 @@ export function SampleExplorer({ siteId, title }: { siteId?: string; title: stri
   const router = useRouter();
   const pageSize = 25;
 
+  useEffect(() => {
+    listFieldDefinitions().then(setFieldDefs);
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await listSamples({ site_id: siteId, search: search || undefined, tags: tags.length ? tags : undefined, page, page_size: pageSize });
+      const res = await listSamples({
+        site_id: siteId,
+        search: search || undefined,
+        field_filters: filters.length ? filters : undefined,
+        page,
+        page_size: pageSize,
+      });
       setSamples(res.items);
       setTotal(res.total);
     } catch (err) {
@@ -41,7 +52,7 @@ export function SampleExplorer({ siteId, title }: { siteId?: string; title: stri
     } finally {
       setLoading(false);
     }
-  }, [siteId, search, tags, page]);
+  }, [siteId, search, filters, page]);
 
   useEffect(() => {
     load();
@@ -66,7 +77,7 @@ export function SampleExplorer({ siteId, title }: { siteId?: string; title: stri
   async function handleExport() {
     setExporting(true);
     try {
-      const blob = await exportSamples({ site_id: siteId, search: search || undefined, tags: tags.length ? tags : undefined });
+      const blob = await exportSamples({ site_id: siteId, search: search || undefined, field_filters: filters.length ? filters : undefined });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -82,6 +93,7 @@ export function SampleExplorer({ siteId, title }: { siteId?: string; title: stri
 
   const addSampleHref = siteId ? `/samples/new?site_id=${siteId}` : "/samples/new";
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const typeOfTissueField = fieldDefs.find((f) => f.field_key === "type-of-tissue");
 
   return (
     <div>
@@ -121,25 +133,26 @@ export function SampleExplorer({ siteId, title }: { siteId?: string; title: stri
         </div>
       </div>
 
-      <div className="mb-4 flex flex-wrap gap-3">
+      <div className="mb-4 space-y-3">
         <input
           value={search}
           onChange={(e) => {
             setPage(1);
             setSearch(e.target.value);
           }}
-          placeholder="Search subject or sample code…"
-          className="min-w-[240px] flex-1 rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+          placeholder="Search Subject ID or Sample ID…"
+          className="w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
         />
-        <div className="min-w-[240px] flex-1">
-          <TagFilterInput
-            tags={tags}
-            onChange={(t) => {
+        {fieldDefs.length > 0 && (
+          <FieldFilterInput
+            fields={fieldDefs}
+            filters={filters}
+            onChange={(f) => {
               setPage(1);
-              setTags(t);
+              setFilters(f);
             }}
           />
-        </div>
+        )}
       </div>
 
       {error && <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
@@ -157,22 +170,21 @@ export function SampleExplorer({ siteId, title }: { siteId?: string; title: stri
                   }
                 />
               </th>
-              <th className="px-5 py-3">Subject Code</th>
-              <th className="px-5 py-3">Sample Code</th>
-              <th className="px-5 py-3">Sample Type</th>
-              <th className="px-5 py-3">Tags</th>
+              <th className="px-5 py-3">Subject ID</th>
+              <th className="px-5 py-3">Sample ID</th>
+              {typeOfTissueField && <th className="px-5 py-3">Type of Tissue</th>}
               <th className="px-5 py-3">Created</th>
             </tr>
           </thead>
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={6} className="px-5 py-6 text-center text-gray-400">Loading…</td>
+                <td colSpan={5} className="px-5 py-6 text-center text-gray-400">Loading…</td>
               </tr>
             )}
             {!loading && samples.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-5 py-6 text-center text-gray-400">No samples found.</td>
+                <td colSpan={5} className="px-5 py-6 text-center text-gray-400">No samples found.</td>
               </tr>
             )}
             {samples.map((sample) => (
@@ -193,16 +205,11 @@ export function SampleExplorer({ siteId, title }: { siteId?: string; title: stri
                 <td className="cursor-pointer px-5 py-3 text-gray-700" onClick={() => router.push(`/samples/${sample.id}`)}>
                   {sample.sample_id}
                 </td>
-                <td className="px-5 py-3 text-gray-500">{sample.sample_type || "—"}</td>
-                <td className="px-5 py-3">
-                  <div className="flex flex-wrap gap-1">
-                    {sample.tags.map((t) => (
-                      <span key={t} className="rounded-full bg-peach-50 px-2 py-0.5 text-xs text-brand">
-                        {t}
-                      </span>
-                    ))}
-                  </div>
-                </td>
+                {typeOfTissueField && (
+                  <td className="px-5 py-3 text-gray-500">
+                    {String(sample.custom_fields["type-of-tissue"] ?? "—")}
+                  </td>
+                )}
                 <td className="px-5 py-3 text-gray-400">{new Date(sample.created_at).toLocaleDateString()}</td>
               </tr>
             ))}

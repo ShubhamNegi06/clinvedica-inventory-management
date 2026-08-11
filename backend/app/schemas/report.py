@@ -10,7 +10,7 @@ from app.models.enums import ReportType
 
 class ReportRead(BaseModel):
     id: uuid.UUID
-    sample_id: uuid.UUID
+    sample_pk: uuid.UUID
     site_id: uuid.UUID
     file_name: str
     file_size_bytes: Optional[int]

@@ -5,23 +5,13 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { RoleGate } from "@/components/RoleGate";
 import { Field, TextInput, Select } from "@/components/FormFields";
 import { SectionCard, DynamicFieldGrid } from "@/components/DynamicFieldGrid";
-import { SubjectCodeInput } from "@/components/SubjectCodeInput";
-import { TagFilterInput } from "@/components/TagFilterInput";
+import { SubjectIdInput } from "@/components/SubjectIdInput";
 import { listFieldDefinitions, listSites, createSample, getSubjectAutofill } from "@/lib/resources";
 import { groupFieldsBySections } from "@/lib/fieldSections";
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/authContext";
 import type { FieldSection } from "@/lib/fieldSections";
-import type { Site, SampleType } from "@/lib/types";
-
-const SAMPLE_TYPES: { value: SampleType; label: string }[] = [
-  { value: "ffpe", label: "FFPE" },
-  { value: "frozen_tumor", label: "Frozen Tumor" },
-  { value: "serum", label: "Serum" },
-  { value: "plasma", label: "Plasma" },
-  { value: "whole_blood", label: "Whole Blood" },
-  { value: "other", label: "Other" },
-];
+import type { Site } from "@/lib/types";
 
 function AddSampleContent() {
   const { user } = useAuth();
@@ -32,10 +22,8 @@ function AddSampleContent() {
   const [sections, setSections] = useState<FieldSection[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [siteId, setSiteId] = useState(presetSiteId ?? user?.site_id ?? "");
-  const [subjectCode, setSubjectCode] = useState("");
-  const [sampleCode, setSampleCode] = useState("");
-  const [sampleType, setSampleType] = useState<SampleType | "">("");
-  const [tags, setTags] = useState<string[]>([]);
+  const [subjectId, setSubjectId] = useState("");
+  const [sampleId, setSampleId] = useState("");
   const [customFields, setCustomFields] = useState<Record<string, unknown>>({});
   const [autofilledKeys, setAutofilledKeys] = useState<Set<string>>(new Set());
   const [autofillNotice, setAutofillNotice] = useState<string | null>(null);
@@ -50,9 +38,9 @@ function AddSampleContent() {
     if (isManagerOrAdmin) listSites().then(setSites);
   }, [isManagerOrAdmin]);
 
-  async function handleSubjectSelected(code: string) {
+  async function handleSubjectSelected(id: string) {
     try {
-      const res = await getSubjectAutofill(code);
+      const res = await getSubjectAutofill(id);
       if (res.found) {
         setCustomFields((prev) => ({ ...prev, ...res.custom_fields }));
         setAutofilledKeys(new Set(Object.keys(res.custom_fields)));
@@ -73,10 +61,8 @@ function AddSampleContent() {
     try {
       const created = await createSample({
         site_id: siteId,
-        subject_id: subjectCode,
-        sample_id: sampleCode,
-        sample_type: sampleType || undefined,
-        tags,
+        subject_id: subjectId,
+        sample_id: sampleId,
         custom_fields: customFields,
       });
       router.push(`/samples/${created.id}`);
@@ -111,8 +97,8 @@ function AddSampleContent() {
             </Field>
           )}
 
-          <Field label="Subject Code">
-            <SubjectCodeInput value={subjectCode} onChange={setSubjectCode} onSubjectSelected={handleSubjectSelected} />
+          <Field label="Subject ID">
+            <SubjectIdInput value={subjectId} onChange={setSubjectId} onSubjectSelected={handleSubjectSelected} />
           </Field>
 
           {autofillNotice && (
@@ -124,34 +110,20 @@ function AddSampleContent() {
             </div>
           )}
 
-          <Field label="Sample Code">
+          <Field label="Sample ID">
             <TextInput
               required
-              value={sampleCode}
-              onChange={(e) => setSampleCode(e.target.value)}
+              placeholder="e.g. GB-01FFPE1"
+              value={sampleId}
+              onChange={(e) => setSampleId(e.target.value)}
               className={formFieldError ? "border-red-400" : ""}
             />
             {formFieldError && <p className="mt-1 text-xs text-red-600">{formFieldError}</p>}
           </Field>
-
-          <Field label="Sample Type">
-            <Select value={sampleType} onChange={(e) => setSampleType(e.target.value as SampleType)}>
-              <option value="">Select…</option>
-              {SAMPLE_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
-                </option>
-              ))}
-            </Select>
-          </Field>
-
-          <Field label="Tags">
-            <TagFilterInput tags={tags} onChange={setTags} />
-          </Field>
         </SectionCard>
 
         {sections.map((section) => (
-          <SectionCard key={section.key} title={section.label} defaultOpen={false}>
+          <SectionCard key={section.key} title={section.label} defaultOpen={section.key === "case_details"}>
             <DynamicFieldGrid
               fields={section.fields}
               values={customFields}

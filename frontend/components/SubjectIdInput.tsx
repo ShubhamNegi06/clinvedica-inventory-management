@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { getSubjectSuggestions } from "@/lib/resources";
 import { TextInput } from "./FormFields";
 
-export function SubjectCodeInput({
+export function SubjectIdInput({
   value,
   onChange,
   onSubjectSelected,
@@ -12,7 +12,7 @@ export function SubjectCodeInput({
   value: string;
   onChange: (value: string) => void;
   /** Fired when the user picks a suggestion or blurs with a full match — triggers the autofill lookup. */
-  onSubjectSelected: (subjectCode: string) => void;
+  onSubjectSelected: (subjectId: string) => void;
 }) {
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
@@ -45,7 +45,7 @@ export function SubjectCodeInput({
         onChange={(e) => onChange(e.target.value)}
         onFocus={() => suggestions.length > 0 && setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
-        placeholder="e.g. SUBJ-0042"
+        placeholder="e.g. GB-01"
       />
       {open && (
         <ul className="absolute z-10 mt-1 w-full rounded-lg border border-gray-200 bg-white py-1 shadow-lg">

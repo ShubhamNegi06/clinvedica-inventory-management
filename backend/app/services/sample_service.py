@@ -4,6 +4,13 @@ Business logic for Sample CRUD. All list/get operations are scoped by
 samples even if they guess an ID — the scoping happens at the query
 level, not just at the route/permission-check level, which is the safer
 pattern (defense in depth).
+
+Field filtering: filters are structured key:value pairs against
+Sample.custom_fields (e.g. field_key="tumor-percent", value="60"),
+NOT freeform tags — the earlier tags-array feature was removed because
+it didn't match what was actually requested (filtering like
+"Tumor % : >60%", i.e. a specific template field matched against a
+specific value).
 """
 import uuid
 from typing import List, Optional, Tuple
@@ -19,6 +26,16 @@ from app.models.user import User
 from app.schemas.sample import SampleCreate, SampleUpdate
 
 
+class FieldFilter:
+    """One key:value filter against custom_fields, e.g. field_key='tumor-percent', value='60%'."""
+
+    __slots__ = ("field_key", "value")
+
+    def __init__(self, field_key: str, value: str):
+        self.field_key = field_key
+        self.value = value
+
+
 def _base_query(current_user: User, db: Session):
     accessible = get_accessible_site_ids(current_user, db)
     stmt = select(Sample).where(Sample.is_deleted.is_(False))
@@ -32,7 +49,7 @@ def list_samples(
     current_user: User,
     *,
     site_id: Optional[uuid.UUID] = None,
-    tags: Optional[List[str]] = None,
+    field_filters: Optional[List[FieldFilter]] = None,
     search: Optional[str] = None,
     page: int = 1,
     page_size: int = 25,
@@ -40,15 +57,21 @@ def list_samples(
     """
     Filters:
       - site_id: narrow to one site (still permission-checked)
-      - tags: samples containing ANY of the given tags (tag filtering feature)
+      - field_filters: samples whose custom_fields[field_key] CONTAINS
+        value (case-insensitive substring match) — e.g. field_key=
+        "tumor-percent", value="60" matches a stored value of ">60%".
+        Multiple filters are ANDed together (a sample must match all of
+        them).
       - search: matches subject_id or sample_id, case-insensitive
     """
     stmt = _base_query(current_user, db)
 
     if site_id is not None:
         stmt = stmt.where(Sample.site_id == site_id)
-    if tags:
-        stmt = stmt.where(Sample.tags.overlap(tags))
+
+    for f in field_filters or []:
+        stmt = stmt.where(Sample.custom_fields[f.field_key].astext.ilike(f"%{f.value}%"))
+
     if search:
         like = f"%{search.strip()}%"
         stmt = stmt.where(
@@ -62,8 +85,8 @@ def list_samples(
     return items, total
 
 
-def get_sample(db: Session, current_user: User, sample_id: uuid.UUID) -> Sample:
-    stmt = _base_query(current_user, db).where(Sample.id == sample_id)
+def get_sample(db: Session, current_user: User, sample_row_id: uuid.UUID) -> Sample:
+    stmt = _base_query(current_user, db).where(Sample.id == sample_row_id)
     sample = db.execute(stmt).scalar_one_or_none()
     if sample is None:
         raise NotFoundError("Sample not found.", field="sample_id")
@@ -80,8 +103,6 @@ def create_sample(db: Session, current_user: User, payload: SampleCreate) -> Sam
         site_id=payload.site_id,
         subject_id=payload.subject_id,
         sample_id=payload.sample_id,
-        sample_type=payload.sample_type,
-        tags=payload.tags,
         custom_fields=payload.custom_fields,
         created_by=current_user.id,
         updated_by=current_user.id,
@@ -91,13 +112,13 @@ def create_sample(db: Session, current_user: User, payload: SampleCreate) -> Sam
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        # Mirrors the v1 lesson: use the DB constraint name as the
-        # reliable signal, not a fragile string match on the raw message,
-        # and never leak the raw Postgres error to the client.
+        # Use the DB constraint name as the reliable signal, not a
+        # fragile string match on the raw message, and never leak the
+        # raw Postgres error to the client.
         constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
-        if constraint == "uq_sample_site_code":
+        if constraint == "uq_sample_site_sample_id":
             raise ConflictError(
-                f"Sample code '{payload.sample_id}' already exists at this site.",
+                f"Sample ID '{payload.sample_id}' already exists at this site.",
                 field="sample_id",
             )
         raise
@@ -105,8 +126,8 @@ def create_sample(db: Session, current_user: User, payload: SampleCreate) -> Sam
     return sample
 
 
-def update_sample(db: Session, current_user: User, sample_id: uuid.UUID, payload: SampleUpdate) -> Sample:
-    sample = get_sample(db, current_user, sample_id)
+def update_sample(db: Session, current_user: User, sample_row_id: uuid.UUID, payload: SampleUpdate) -> Sample:
+    sample = get_sample(db, current_user, sample_row_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(sample, field, value)
     sample.updated_by = current_user.id
@@ -115,13 +136,13 @@ def update_sample(db: Session, current_user: User, sample_id: uuid.UUID, payload
     except IntegrityError:
         db.rollback()
         raise ConflictError(
-            f"Sample code '{payload.sample_id}' already exists at this site.", field="sample_id"
+            f"Sample ID '{payload.sample_id}' already exists at this site.", field="sample_id"
         )
     db.refresh(sample)
     return sample
 
 
-def soft_delete_sample(db: Session, current_user: User, sample_id: uuid.UUID) -> None:
+def soft_delete_sample(db: Session, current_user: User, sample_row_id: uuid.UUID) -> None:
     """
     Soft-deletes the sample AND purges its reports (R2 objects + DB rows)
     in the same call. This directly fixes the v1 bug where report cleanup
@@ -130,7 +151,7 @@ def soft_delete_sample(db: Session, current_user: User, sample_id: uuid.UUID) ->
     """
     from app.services import report_service
 
-    sample = get_sample(db, current_user, sample_id)
+    sample = get_sample(db, current_user, sample_row_id)
     report_service.purge_reports_for_sample(db, sample.id)
 
     sample.is_deleted = True
