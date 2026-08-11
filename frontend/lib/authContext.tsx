@@ -1,23 +1,28 @@
 "use client";
 
 /**
- * AuthProvider resolves the Supabase session into our app-level `AppUser`
- * (role, site_id, etc.) via GET /auth/me, and exposes it through context.
- * This is the single source of truth every dashboard/layout reads from
- * to decide what to render and where to redirect.
+ * AuthProvider now owns the whole client-side session lifecycle directly
+ * (replacing the earlier Supabase-session-based version):
+ *   - On mount, attempts a silent refresh (POST /auth/refresh, relying
+ *     on the httpOnly cookie) to restore a session without requiring
+ *     re-login on every page load/reload.
+ *   - Holds the access token in memory via lib/api.ts's
+ *     setAccessToken/getAccessToken — never in localStorage.
+ *   - login()/logout() call the new FastAPI endpoints directly.
  */
 import { createContext, useContext, useEffect, useState, ReactNode, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "./supabaseClient";
-import { getCurrentUser } from "./resources";
+import { getAccessToken, setAccessToken, refreshAccessToken } from "./api";
+import { login as apiLogin, logout as apiLogout, getCurrentUser } from "./resources";
 import type { AppUser } from "./types";
 
 interface AuthContextValue {
   user: AppUser | null;
   loading: boolean;
   error: string | null;
-  refresh: () => Promise<void>;
+  login: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
+  refresh: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -28,45 +33,58 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
-  const loadUser = useCallback(async () => {
+  const restoreSession = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const { data } = await supabase.auth.getSession();
-      if (!data.session) {
-        setUser(null);
+      // If we already have an access token in memory (e.g. just logged
+      // in), skip the silent-refresh round trip and just fetch the
+      // profile. Otherwise (fresh page load), try to silently restore a
+      // session from the refresh cookie.
+      if (!getAccessToken()) {
+        const refreshed = await refreshAccessToken();
+        if (!refreshed) {
+          setUser(null);
+          return;
+        }
+        setUser(refreshed.user);
         return;
       }
       const profile = await getCurrentUser();
       setUser(profile);
     } catch (err) {
-      // A verified Supabase session but a failed /auth/me call usually
-      // means the account exists in Supabase Auth but was never
-      // provisioned in our `users` table (or was deactivated) — surface
-      // that clearly rather than silently redirecting to login.
       setError(err instanceof Error ? err.message : "Failed to load your account.");
       setUser(null);
+      setAccessToken(null);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadUser();
-    const { data: subscription } = supabase.auth.onAuthStateChange(() => {
-      loadUser();
-    });
-    return () => subscription.subscription.unsubscribe();
-  }, [loadUser]);
+    restoreSession();
+  }, [restoreSession]);
+
+  const login = useCallback(
+    async (email: string, password: string) => {
+      setError(null);
+      const profile = await apiLogin(email, password);
+      setUser(profile);
+    },
+    []
+  );
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
+    await apiLogout().catch(() => {
+      // Logout should always succeed from the user's point of view even
+      // if the network call fails — clear local state regardless.
+    });
     setUser(null);
     router.replace("/login");
   }, [router]);
 
   return (
-    <AuthContext.Provider value={{ user, loading, error, refresh: loadUser, signOut }}>
+    <AuthContext.Provider value={{ user, loading, error, login, signOut, refresh: restoreSession }}>
       {children}
     </AuthContext.Provider>
   );

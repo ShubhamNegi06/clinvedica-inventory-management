@@ -6,32 +6,38 @@ central check): Inventory Managers may create/edit/delete Inventory
 Manager and Site User accounts, but never IT Admin accounts. IT Admins
 are unrestricted. This is checked server-side regardless of what the
 frontend shows/hides.
+
+Auth note: user creation no longer talks to an external identity
+provider (no more Supabase Admin API round-trip). The local row is
+created directly with a random, never-communicated placeholder password,
+and an invite email (with a "set your password" link) is sent
+asynchronously via Celery — the request returns as soon as the DB row
+exists, without waiting on SMTP delivery.
 """
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from pydantic import BaseModel, EmailStr
 
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_manager_or_admin
+from app.core.config import get_settings
 from app.core.exceptions import NotFoundError
+from app.core.security import generate_opaque_token
 from app.db.session import get_db
 from app.models.enums import UserRole
+from app.models.password_reset_token import TokenPurpose
 from app.models.user import User
 from app.schemas.user import UserCreate, UserRead, UserUpdate
-from app.services import auth_provisioning, user_service
+from app.services import auth_service, user_service
+from app.services.email_service import build_invite_email, build_password_reset_email
 
 router = APIRouter(prefix="/users", tags=["users"])
+settings = get_settings()
 
 
 class CreateUserRequest(BaseModel):
-    """
-    What the frontend actually submits: no Supabase UUID yet, since the
-    Auth account doesn't exist until we provision it server-side. The
-    route below handles the full provision -> create-local-row flow.
-    """
-
     email: EmailStr
     full_name: str
     role: UserRole
@@ -64,41 +70,27 @@ def create_user(
     current_user: User = Depends(require_manager_or_admin),
 ):
     """
-    Two-step provisioning with compensating rollback:
-      1. Create the Supabase Auth account (sends an invite email with a
-         redirect_to our /set-password page).
-      2. Create the local `users` row with role/site_id — this is also
-         where the "Manager cannot create IT Admin" rule is enforced
-         (see user_service._assert_can_manage_role), BEFORE any Supabase
-         account would be created, so we never provision an auth account
-         for a request that was going to be rejected anyway.
-    If step 2 fails after step 1 succeeds for any other reason, we delete
-    the orphaned auth account rather than leaving an account that can log
-    in but has no role in our system.
+    Creates the local user row (with a random unusable placeholder
+    password) then enqueues an invite email — the account only becomes
+    usable once the recipient follows that link and sets a real password
+    via POST /auth/reset-password.
     """
-    # Fail fast on the role rule before touching Supabase Auth at all.
-    if current_user.role == UserRole.INVENTORY_MANAGER and payload.role == UserRole.IT_ADMIN:
-        from app.core.exceptions import PermissionDeniedError
+    placeholder_password = generate_opaque_token()
 
-        raise PermissionDeniedError("Inventory Managers cannot create IT Admin accounts.")
+    user = user_service.create_user(
+        db,
+        UserCreate(email=payload.email, full_name=payload.full_name, role=payload.role, site_id=payload.site_id),
+        created_by=current_user,
+        initial_password=placeholder_password,
+    )
 
-    supabase_user_id = auth_provisioning.provision_auth_user(payload.email, payload.full_name)
+    raw_token = auth_service.create_password_reset_token(db, user, TokenPurpose.INVITE)
+    set_password_url = f"{settings.FRONTEND_URL.rstrip('/')}/set-password?token={raw_token}&purpose=invite"
+    subject, html, text = build_invite_email(user.full_name, set_password_url)
 
-    try:
-        user = user_service.create_user(
-            db,
-            UserCreate(
-                id=uuid.UUID(supabase_user_id),
-                email=payload.email,
-                full_name=payload.full_name,
-                role=payload.role,
-                site_id=payload.site_id,
-            ),
-            created_by=current_user,
-        )
-    except Exception:
-        auth_provisioning.delete_auth_user(supabase_user_id)
-        raise
+    from app.tasks.email_tasks import send_email_task
+
+    send_email_task.delay(user.email, subject, html, text)
 
     return user
 
@@ -120,18 +112,10 @@ def delete_user(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_manager_or_admin),
 ):
-    """
-    Deletes the user in both systems: local row first (so the role-check
-    and self-delete guard in user_service run before we touch Supabase),
-    then the Supabase Auth account. If the Supabase delete fails, the
-    local row is already gone — this is logged via StorageError rather
-    than silently swallowed, so an orphaned auth account is visible and
-    fixable rather than invisible.
-    """
+    """Deletes the local user row. Any outstanding refresh/reset tokens
+    for this user cascade-delete via FK — see user_service.delete_user."""
     user = _get_user_or_404(db, user_id)
-    supabase_user_id = str(user.id)
     user_service.delete_user(db, current_user, user)
-    auth_provisioning.delete_auth_user(supabase_user_id)
 
 
 @router.post("/{user_id}/send-password-reset", status_code=200)
@@ -140,14 +124,22 @@ def send_password_reset(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_manager_or_admin),
 ):
-    """Sends the user a 'reset your password' email (same redirect flow as the invite)."""
+    """Sends the user a 'reset your password' email asynchronously via Celery."""
     user = _get_user_or_404(db, user_id)
     if current_user.role == UserRole.INVENTORY_MANAGER and user.role == UserRole.IT_ADMIN:
         from app.core.exceptions import PermissionDeniedError
 
         raise PermissionDeniedError("Inventory Managers cannot manage IT Admin accounts.")
-    auth_provisioning.send_password_reset_email(user.email)
-    return {"message": f"Password reset email sent to {user.email}."}
+
+    raw_token = auth_service.create_password_reset_token(db, user, TokenPurpose.RESET)
+    reset_url = f"{settings.FRONTEND_URL.rstrip('/')}/set-password?token={raw_token}&purpose=reset"
+    subject, html, text = build_password_reset_email(user.full_name, reset_url)
+
+    from app.tasks.email_tasks import send_email_task
+
+    task = send_email_task.delay(user.email, subject, html, text)
+
+    return {"message": f"Password reset email queued for {user.email}.", "task_id": task.id}
 
 
 @router.post("/{user_id}/set-temporary-password", response_model=TemporaryPasswordResponse)
@@ -162,5 +154,6 @@ def set_temporary_password(
         from app.core.exceptions import PermissionDeniedError
 
         raise PermissionDeniedError("Inventory Managers cannot manage IT Admin accounts.")
-    temp_password = auth_provisioning.set_temporary_password(str(user.id))
+
+    temp_password = auth_service.set_temporary_password(db, user)
     return TemporaryPasswordResponse(temporary_password=temp_password)

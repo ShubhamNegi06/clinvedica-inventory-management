@@ -10,13 +10,12 @@ from app.models.enums import UserRole
 
 class UserCreate(BaseModel):
     """
-    Used by IT Admin / Inventory Manager to provision a new user.
-    `id` is required because the Supabase Auth account must be created
-    first (via Supabase Admin API, in app/services/auth_provisioning.py)
-    and its issued UUID passed in here — we never generate our own.
+    Used internally by user_service.create_user — the local `users` row
+    is now created directly (no external identity provider to provision
+    first). `id` is generated server-side (uuid4), never supplied by the
+    caller.
     """
 
-    id: uuid.UUID = Field(..., description="Supabase auth.users.id for the newly created account")
     email: EmailStr
     full_name: str = Field(..., min_length=1, max_length=255)
     role: UserRole

@@ -15,7 +15,7 @@ from fastapi import Depends, Header
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import PermissionDeniedError, UnauthorizedError
-from app.core.security import decode_supabase_token
+from app.core.security import decode_token
 from app.db.session import get_db
 from app.models.enums import UserRole
 from app.models.site import Site
@@ -34,15 +34,12 @@ def get_current_user(
     db: Session = Depends(get_db),
 ) -> User:
     """
-    Resolve the authenticated Supabase JWT into our own `User` row.
-
-    A verified token but no matching local user (e.g. deprovisioned, or
-    Supabase Auth account created but never provisioned in our `users`
-    table) is treated as unauthorized, not as an anonymous/guest user —
-    this app has no anonymous access anywhere.
+    Resolve the authenticated access token into our own `User` row.
+    `decode_token(..., "access")` rejects a refresh token used here by
+    checking the `type` claim — see app/core/security.py.
     """
-    claims = decode_supabase_token(token)
-    user_id = claims.get("sub")
+    payload = decode_token(token, expected_type="access")
+    user_id = payload.get("sub")
     if not user_id:
         raise UnauthorizedError("Token missing subject claim.")
 

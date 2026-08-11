@@ -1,8 +1,10 @@
 "use client";
 
 import { useState, FormEvent } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabaseClient";
+import { useAuth } from "@/lib/authContext";
+import { ApiError } from "@/lib/api";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -11,21 +13,21 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
+  const { login } = useAuth();
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError(null);
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
-
-    if (signInError) {
-      setError(signInError.message);
+    try {
+      await login(email, password);
+      router.replace("/dashboard");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to sign in.");
+    } finally {
       setLoading(false);
-      return;
     }
-
-    router.replace("/dashboard");
   }
 
   return (
@@ -57,7 +59,7 @@ export default function LoginPage() {
             />
           </div>
 
-          <div className="mb-6">
+          <div className="mb-2">
             <label htmlFor="password" className="mb-1.5 block text-sm font-medium text-gray-700">
               Password
             </label>
@@ -81,6 +83,12 @@ export default function LoginPage() {
                 {showPassword ? "Hide" : "Show"}
               </button>
             </div>
+          </div>
+
+          <div className="mb-6 text-right">
+            <Link href="/forgot-password" className="text-xs font-medium text-brand hover:underline">
+              Forgot password?
+            </Link>
           </div>
 
           {error && (

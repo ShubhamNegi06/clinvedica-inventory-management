@@ -9,6 +9,7 @@ enforced here (not just hidden in the UI) since the UI-only version was
 exactly the kind of gap that let a Manager create an Admin account
 before.
 """
+import uuid
 from typing import List
 
 from sqlalchemy import select
@@ -16,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ConflictError, PermissionDeniedError, ValidationAppError
+from app.core.security import hash_password
 from app.models.enums import UserRole
 from app.models.user import User
 from app.schemas.user import UserCreate, UserUpdate
@@ -33,13 +35,15 @@ def _assert_can_manage_role(actor: User, target_role: UserRole) -> None:
         raise PermissionDeniedError("Inventory Managers cannot create or manage IT Admin accounts.")
 
 
-def create_user(db: Session, payload: UserCreate, created_by: User) -> User:
+def create_user(db: Session, payload: UserCreate, created_by: User, initial_password: str) -> User:
     """
-    Creates the local `users` row for an account that must already exist
-    in Supabase Auth (see app/services/auth_provisioning.py — the caller
-    is expected to have invoked that first and passed the resulting UUID
-    as payload.id). This split keeps auth-provider concerns out of the
-    core domain model.
+    Creates the local `users` row directly — no external identity
+    provider to provision first, unlike the earlier Supabase-backed
+    version. `initial_password` is a random, never-communicated-as-is
+    placeholder (the caller — see users.py route — immediately follows
+    this up by generating an invite token and emailing a "set your
+    password" link; the account is never actually usable with
+    `initial_password` since the user never sees it).
     """
     _assert_can_manage_role(created_by, payload.role)
 
@@ -51,11 +55,12 @@ def create_user(db: Session, payload: UserCreate, created_by: User) -> User:
         )
 
     user = User(
-        id=payload.id,
-        email=payload.email,
+        id=uuid.uuid4(),
+        email=payload.email.lower().strip(),
         full_name=payload.full_name,
         role=payload.role,
         site_id=payload.site_id,
+        hashed_password=hash_password(initial_password),
         created_by=created_by.id,
     )
     db.add(user)
@@ -92,10 +97,11 @@ def update_user(db: Session, actor: User, user: User, payload: UserUpdate) -> Us
 
 def delete_user(db: Session, actor: User, user: User) -> None:
     """
-    Permanently deletes the local user row. The corresponding Supabase
-    Auth account must be deleted separately by the caller (route) via
-    auth_provisioning.delete_auth_user — kept as two explicit steps so a
-    failure in either is visible rather than silently partial.
+    Permanently deletes the local user row. Any outstanding refresh
+    tokens and password-reset tokens for this user cascade-delete via
+    the FK (ondelete="CASCADE" on both tables), so a deleted user's old
+    sessions/reset links stop working automatically, not as a separate
+    step that could be forgotten.
     """
     _assert_can_manage_role(actor, user.role)
     if actor.id == user.id:

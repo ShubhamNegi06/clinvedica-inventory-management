@@ -45,6 +45,18 @@ def build_object_key(site_id: uuid.UUID, sample_id: uuid.UUID, filename: str) ->
     return f"reports/{site_id}/{sample_id}/{uuid.uuid4()}_{safe_name}"
 
 
+def build_export_object_key(user_id: uuid.UUID, filename: str) -> str:
+    """
+    Key layout for generated export files (Excel exports produced by
+    Celery tasks): exports/{user_id}/{uuid4}_{filename}. These are
+    short-lived (downloaded once via a signed URL shortly after the task
+    completes) and namespaced by the user who requested them, distinct
+    from the `reports/` prefix used for uploaded PDF reports.
+    """
+    safe_name = filename.replace("/", "_").replace("\\", "_")
+    return f"exports/{user_id}/{uuid.uuid4()}_{safe_name}"
+
+
 def upload_file(file_obj: BinaryIO, object_key: str, content_type: str) -> None:
     try:
         _client().upload_fileobj(

@@ -9,14 +9,15 @@ import {
   getSample,
   deleteSample,
   listReportsForSample,
-  uploadReports,
+  startReportUpload,
   getReportDownloadUrl,
   deleteReport,
   listFieldDefinitions,
 } from "@/lib/resources";
 import { groupFieldsBySections } from "@/lib/fieldSections";
 import { ApiError } from "@/lib/api";
-import type { Sample, Report } from "@/lib/types";
+import { useTaskPolling } from "@/lib/useTaskPolling";
+import type { Sample, Report, ReportUploadTaskResult } from "@/lib/types";
 import type { FieldSection } from "@/lib/fieldSections";
 
 function SampleDetailContent() {
@@ -31,9 +32,9 @@ function SampleDetailContent() {
   const [reports, setReports] = useState<Report[]>([]);
   const [activeReportUrl, setActiveReportUrl] = useState<{ url: string; name: string } | null>(null);
   const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [uploadErrors, setUploadErrors] = useState<Array<{ file_name: string; error: string }>>([]);
+  const [uploadTaskId, setUploadTaskId] = useState<string | null>(null);
+  const uploadTask = useTaskPolling<ReportUploadTaskResult>(uploadTaskId);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -58,6 +59,15 @@ function SampleDetailContent() {
     load();
   }, [load]);
 
+  // Once the background upload task finishes, reload the report list —
+  // this is the "automatically provide the result when the task
+  // completes" behavior for uploads.
+  useEffect(() => {
+    if (uploadTask.status === "SUCCESS") {
+      load();
+    }
+  }, [uploadTask.status, load]);
+
   async function handleDeleteSample() {
     if (!confirm("Delete this sample and all its reports? This cannot be undone.")) return;
     await deleteSample(params.sampleId);
@@ -67,21 +77,18 @@ function SampleDetailContent() {
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
     if (files.length === 0) return;
-    setUploading(true);
     setError(null);
-    setUploadErrors([]);
     try {
-      // Every selected file goes in ONE request — this is the fix for
-      // "can only upload one report at a time". Files that individually
-      // fail (wrong type, too large) are reported without blocking the
-      // ones that succeeded.
-      const res = await uploadReports(params.sampleId, files);
-      if (res.errors.length > 0) setUploadErrors(res.errors);
-      await load();
+      // Every selected file goes in ONE background task — this is the
+      // fix for "can only upload one report at a time", now running off
+      // the request thread entirely. A duplicate click while a task is
+      // already running is prevented below (the upload label is
+      // disabled while uploadTask.isRunning is true).
+      const { task_id } = await startReportUpload(params.sampleId, files);
+      setUploadTaskId(task_id);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to upload reports.");
+      setError(err instanceof ApiError ? err.message : "Failed to start report upload.");
     } finally {
-      setUploading(false);
       e.target.value = "";
     }
   }
@@ -143,26 +150,41 @@ function SampleDetailContent() {
           <div className="mb-4 rounded-2xl border border-gray-100 bg-white p-5 shadow-sm">
             <div className="mb-3 flex items-center justify-between">
               <p className="text-sm font-semibold text-gray-900">Reports</p>
-              <label className="cursor-pointer text-xs font-medium text-brand hover:underline">
-                {uploading ? "Uploading…" : "+ Upload PDFs"}
+              <label
+                className={
+                  "text-xs font-medium " +
+                  (uploadTask.isRunning ? "cursor-not-allowed text-gray-400" : "cursor-pointer text-brand hover:underline")
+                }
+              >
+                {uploadTask.isRunning ? "Uploading…" : "+ Upload PDFs"}
                 <input
                   type="file"
                   accept="application/pdf"
                   multiple
                   onChange={handleUpload}
                   className="hidden"
-                  disabled={uploading}
+                  disabled={uploadTask.isRunning}
                 />
               </label>
             </div>
 
-            {uploadErrors.length > 0 && (
+            {uploadTask.status === "FAILURE" && (
+              <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{uploadTask.error}</div>
+            )}
+
+            {uploadTask.status === "SUCCESS" && uploadTask.result && uploadTask.result.errors.length > 0 && (
               <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
-                {uploadErrors.map((e, i) => (
+                {uploadTask.result.errors.map((e, i) => (
                   <p key={i}>
                     <strong>{e.file_name}:</strong> {e.error}
                   </p>
                 ))}
+              </div>
+            )}
+
+            {uploadTask.status === "SUCCESS" && uploadTask.result && uploadTask.result.uploaded.length > 0 && (
+              <div className="mb-3 rounded-lg bg-green-50 px-3 py-2 text-xs text-green-700">
+                {uploadTask.result.uploaded.length} report(s) uploaded successfully.
               </div>
             )}
 

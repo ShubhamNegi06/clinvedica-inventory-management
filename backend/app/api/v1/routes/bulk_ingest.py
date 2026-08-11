@@ -1,32 +1,35 @@
-"""Bulk ingestion route — Excel upload -> validated per-row sample creation."""
+"""
+Bulk ingestion route — Excel upload -> enqueues a Celery task and returns
+its task ID immediately, rather than parsing/inserting up to 5,000 rows
+synchronously inside the request. Poll GET /tasks/{task_id} for status
+and the per-row result breakdown once it completes.
+"""
 import uuid
 
 from fastapi import APIRouter, Depends, File, UploadFile
-from sqlalchemy.orm import Session
 
 from app.api.deps import require_any_role
 from app.core.config import get_settings
 from app.core.exceptions import ValidationAppError
-from app.db.session import get_db
 from app.models.user import User
-from app.services import bulk_ingest_service
+from app.schemas.task import TaskEnqueuedResponse
 
 router = APIRouter(prefix="/samples/bulk-ingest", tags=["samples"])
 settings = get_settings()
 
+ALLOWED_TYPES = {
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+}
 
-@router.post("/{site_id}")
+
+@router.post("/{site_id}", response_model=TaskEnqueuedResponse, status_code=202)
 async def bulk_ingest(
     site_id: uuid.UUID,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
     current_user: User = Depends(require_any_role),
 ):
-    allowed_types = {
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.ms-excel",
-    }
-    if file.content_type not in allowed_types:
+    if file.content_type not in ALLOWED_TYPES:
         raise ValidationAppError("Only .xlsx or .xls files are accepted for bulk ingestion.", field="file")
 
     contents = await file.read()
@@ -36,6 +39,7 @@ async def bulk_ingest(
             f"File exceeds the {settings.BULK_INGEST_MAX_FILE_MB}MB limit for bulk uploads.", field="file"
         )
 
-    return bulk_ingest_service.parse_and_ingest(
-        db, current_user, site_id, contents, max_rows=settings.BULK_INGEST_MAX_ROWS
-    )
+    from app.tasks.bulk_ingest_tasks import bulk_ingest_samples_task
+
+    task = bulk_ingest_samples_task.delay(str(current_user.id), str(site_id), contents.hex())
+    return TaskEnqueuedResponse(task_id=task.id)
