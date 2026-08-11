@@ -41,6 +41,11 @@ export const createUser = (payload: {
   role: UserRole;
   site_id?: string;
 }) => apiRequest<AppUser>("/users", { method: "POST", body: payload });
+export const deleteUser = (userId: string) => apiRequest<void>(`/users/${userId}`, { method: "DELETE" });
+export const sendPasswordReset = (userId: string) =>
+  apiRequest<{ message: string }>(`/users/${userId}/send-password-reset`, { method: "POST" });
+export const setTemporaryPassword = (userId: string) =>
+  apiRequest<{ temporary_password: string }>(`/users/${userId}/set-temporary-password`, { method: "POST" });
 
 // --- Samples ---
 export interface SampleListParams {
