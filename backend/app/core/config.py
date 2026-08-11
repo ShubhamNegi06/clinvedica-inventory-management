@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     def CORS_ORIGINS_LIST(self) -> List[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
+    # --- Frontend base URL ---
+    # Used to build the redirect_to link for Supabase invite/recovery
+    # emails, so "set your password" links land on OUR set-password page
+    # instead of nowhere. This was the root cause of the invite-email
+    # bug: without redirect_to, Supabase sends the user back to
+    # SUPABASE_URL's default site (or nothing usable) instead of the app.
+    FRONTEND_URL: str = "http://localhost:3000"
+
     # --- Bulk ingestion limits (guard rails, not arbitrary) ---
     BULK_INGEST_MAX_ROWS: int = 5000
     BULK_INGEST_MAX_FILE_MB: int = 20
