@@ -1,0 +1,21 @@
+name: Deploy Application
+
+on: 
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, controlplane]
+
+    steps:
+      - name: Test runner
+        run: |
+          echo "Deployment triggered"
+          echo "Running on:"
+          hostname
+          echo "User:"
+          whoami
+  
+      
