@@ -3,7 +3,7 @@
  * call these rather than `apiRequest` directly — keeps endpoint paths in
  * exactly one place.
  */
-import { apiRequest, apiDownload } from "./api";
+import { apiRequest, setAccessToken } from "./api";
 import type {
   AppUser,
   DashboardStats,
@@ -13,11 +13,50 @@ import type {
   Sample,
   SampleListResponse,
   Site,
+  TaskEnqueuedResponse,
+  TaskStatusResponse,
   UserRole,
 } from "./types";
 
-// --- Auth ---
+// --- Auth ---------------------------------------------------------------
+// login/logout/refresh are the only calls that need `credentials:
+// "include"` explicitly noted — apiRequest already sets that on every
+// call, but these three are also the ones that actually cause the
+// backend to set/clear the httpOnly refresh cookie.
+
+export interface LoginResult {
+  access_token: string;
+  expires_in_minutes: number;
+  user: AppUser;
+}
+
+export async function login(email: string, password: string): Promise<AppUser> {
+  const result = await apiRequest<LoginResult>("/auth/login", {
+    method: "POST",
+    body: { email, password },
+  });
+  setAccessToken(result.access_token);
+  return result.user;
+}
+
+export async function logout(): Promise<void> {
+  try {
+    await apiRequest<void>("/auth/logout", { method: "POST" });
+  } finally {
+    setAccessToken(null);
+  }
+}
+
 export const getCurrentUser = () => apiRequest<AppUser>("/auth/me");
+
+export const forgotPassword = (email: string) =>
+  apiRequest<{ message: string }>("/auth/forgot-password", { method: "POST", body: { email } });
+
+export const resetPassword = (token: string, newPassword: string) =>
+  apiRequest<{ message: string }>("/auth/reset-password", {
+    method: "POST",
+    body: { token, new_password: newPassword },
+  });
 
 // --- Dashboard ---
 export const getDashboardStats = () => apiRequest<DashboardStats>("/dashboard/stats");
@@ -44,7 +83,7 @@ export const createUser = (payload: {
 }) => apiRequest<AppUser>("/users", { method: "POST", body: payload });
 export const deleteUser = (userId: string) => apiRequest<void>(`/users/${userId}`, { method: "DELETE" });
 export const sendPasswordReset = (userId: string) =>
-  apiRequest<{ message: string }>(`/users/${userId}/send-password-reset`, { method: "POST" });
+  apiRequest<{ message: string; task_id?: string }>(`/users/${userId}/send-password-reset`, { method: "POST" });
 export const setTemporaryPassword = (userId: string) =>
   apiRequest<{ temporary_password: string }>(`/users/${userId}/set-temporary-password`, { method: "POST" });
 
@@ -97,21 +136,31 @@ export const updateSample = (
 export const deleteSample = (samplePk: string) =>
   apiRequest<void>(`/samples/${samplePk}`, { method: "DELETE" });
 
-export const bulkIngestSamples = (siteId: string, file: File) => {
+/**
+ * Starts a bulk-ingest Celery task and returns immediately with a task
+ * ID — this no longer waits for the (potentially 5,000-row) import to
+ * finish inline. Callers should poll getTaskStatus(task_id) — see
+ * lib/useTaskPolling.ts for a ready-made hook.
+ */
+export const startBulkIngest = (siteId: string, file: File) => {
   const formData = new FormData();
   formData.append("file", file);
-  return apiRequest<{
-    created_count: number;
-    created_sample_ids: string[];
-    row_errors: Array<{ sheet?: string; row: number; error: string; sample_id?: string }>;
-  }>(`/samples/bulk-ingest/${siteId}`, { method: "POST", body: formData, isFormData: true });
+  return apiRequest<TaskEnqueuedResponse>(`/samples/bulk-ingest/${siteId}`, {
+    method: "POST",
+    body: formData,
+    isFormData: true,
+  });
 };
 
-export const exportSamples = (params: SampleListParams = {}) =>
-  apiDownload("/samples/export", {
-    site_id: params.site_id,
-    field_filter: toFieldFilterQuery(params.field_filters),
-    search: params.search,
+/** Starts an Excel export Celery task — poll getTaskStatus(task_id); the
+ * result contains a signed download_url once status is SUCCESS. */
+export const startExport = (params: SampleListParams = {}) =>
+  apiRequest<TaskEnqueuedResponse>("/samples/export", {
+    query: {
+      site_id: params.site_id,
+      field_filter: toFieldFilterQuery(params.field_filters),
+      search: params.search,
+    },
   });
 
 // --- Reports ---
@@ -119,19 +168,15 @@ export const listReportsForSample = (samplePk: string) =>
   apiRequest<Report[]>(`/reports/by-sample/${samplePk}`);
 
 /**
- * Uploads one or more PDF reports in a SINGLE request — this is what
- * fixes "can only upload one report at a time": every selected file is
- * appended under the same "files" field and sent together, and the
- * backend validates/stores each independently so one bad file doesn't
- * block the rest.
+ * Starts a Celery task that uploads every selected PDF to R2 — this is
+ * what fixes "can only upload one report at a time" AND moves the R2
+ * I/O off the request thread. Poll getTaskStatus(task_id); the result
+ * contains { uploaded: [...], errors: [...] } once status is SUCCESS.
  */
-export const uploadReports = (samplePk: string, files: File[]) => {
+export const startReportUpload = (samplePk: string, files: File[]) => {
   const formData = new FormData();
   files.forEach((file) => formData.append("files", file));
-  return apiRequest<{
-    uploaded: Report[];
-    errors: Array<{ file_name: string; error: string }>;
-  }>(`/reports/by-sample/${samplePk}`, {
+  return apiRequest<TaskEnqueuedResponse>(`/reports/by-sample/${samplePk}`, {
     method: "POST",
     body: formData,
     isFormData: true,
@@ -144,6 +189,9 @@ export const getReportDownloadUrl = (reportId: string) =>
 export const deleteReport = (reportId: string) =>
   apiRequest<void>(`/reports/${reportId}`, { method: "DELETE" });
 
+// --- Tasks (generic polling) ---
+export const getTaskStatus = (taskId: string) => apiRequest<TaskStatusResponse>(`/tasks/${taskId}`);
+
 // --- Field definitions ---
 export const listFieldDefinitions = () => apiRequest<FieldDefinition[]>("/field-definitions");
 
@@ -155,3 +203,16 @@ export const getSubjectAutofill = (subjectId: string) =>
   apiRequest<{ found: boolean; custom_fields: Record<string, unknown> }>(
     `/subjects/${encodeURIComponent(subjectId)}/autofill`
   );
+
+// --- Excel export file download (from a completed task's result URL) ---
+export async function downloadFromUrl(url: string, filename: string): Promise<void> {
+  // Signed R2 URLs are already authorized on their own — no auth headers
+  // needed for this fetch, it's a plain cross-origin GET to R2.
+  const blob = await fetch(url).then((r) => r.blob());
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(objectUrl);
+}

@@ -11,9 +11,10 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { listSamples, deleteSample, exportSamples, listFieldDefinitions } from "@/lib/resources";
+import { listSamples, deleteSample, startExport, downloadFromUrl, listFieldDefinitions } from "@/lib/resources";
 import { ApiError } from "@/lib/api";
-import type { FieldDefinition, FieldFilter, Sample } from "@/lib/types";
+import { useTaskPolling } from "@/lib/useTaskPolling";
+import type { ExportTaskResult, FieldDefinition, FieldFilter, Sample } from "@/lib/types";
 import { FieldFilterInput } from "./FieldFilterInput";
 
 export function SampleExplorer({ siteId, title }: { siteId?: string; title: string }) {
@@ -26,7 +27,8 @@ export function SampleExplorer({ siteId, title }: { siteId?: string; title: stri
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [exporting, setExporting] = useState(false);
+  const [exportTaskId, setExportTaskId] = useState<string | null>(null);
+  const exportTask = useTaskPolling<ExportTaskResult>(exportTaskId);
   const router = useRouter();
   const pageSize = 25;
 
@@ -58,6 +60,15 @@ export function SampleExplorer({ siteId, title }: { siteId?: string; title: stri
     load();
   }, [load]);
 
+  // Once the export task succeeds, trigger the browser download
+  // automatically — this is the "for exports, automatically provide the
+  // download when the task completes" requirement.
+  useEffect(() => {
+    if (exportTask.status === "SUCCESS" && exportTask.result) {
+      downloadFromUrl(exportTask.result.download_url, exportTask.result.file_name);
+    }
+  }, [exportTask.status, exportTask.result]);
+
   function toggleSelected(id: string) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -75,25 +86,26 @@ export function SampleExplorer({ siteId, title }: { siteId?: string; title: stri
   }
 
   async function handleExport() {
-    setExporting(true);
+    setError(null);
     try {
-      const blob = await exportSamples({ site_id: siteId, search: search || undefined, field_filters: filters.length ? filters : undefined });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "specimen_inventory_export.xlsx";
-      a.click();
-      URL.revokeObjectURL(url);
+      const { task_id } = await startExport({
+        site_id: siteId,
+        search: search || undefined,
+        field_filters: filters.length ? filters : undefined,
+      });
+      setExportTaskId(task_id);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Export failed.");
-    } finally {
-      setExporting(false);
+      setError(err instanceof ApiError ? err.message : "Failed to start export.");
     }
   }
 
   const addSampleHref = siteId ? `/samples/new?site_id=${siteId}` : "/samples/new";
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const typeOfTissueField = fieldDefs.find((f) => f.field_key === "type-of-tissue");
+  const exportButtonLabel =
+    exportTask.status === "PENDING" || exportTask.status === "STARTED"
+      ? "Preparing export…"
+      : "Export to Excel";
 
   return (
     <div>
@@ -113,10 +125,10 @@ export function SampleExplorer({ siteId, title }: { siteId?: string; title: stri
           )}
           <button
             onClick={handleExport}
-            disabled={exporting}
+            disabled={exportTask.isRunning}
             className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
           >
-            {exporting ? "Exporting…" : "Export to Excel"}
+            {exportButtonLabel}
           </button>
           <Link
             href={siteId ? `/bulk-upload?site_id=${siteId}` : "/bulk-upload"}
@@ -132,6 +144,12 @@ export function SampleExplorer({ siteId, title }: { siteId?: string; title: stri
           </Link>
         </div>
       </div>
+
+      {exportTask.status === "FAILURE" && (
+        <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+          Export failed: {exportTask.error}
+        </div>
+      )}
 
       <div className="mb-4 space-y-3">
         <input

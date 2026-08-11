@@ -6,9 +6,19 @@ Import every model here so:
      mapper-configuration time regardless of import order elsewhere.
 """
 from app.models.field_definition import FieldDefinition  # noqa: F401
+from app.models.password_reset_token import PasswordResetToken  # noqa: F401
+from app.models.refresh_token import RefreshToken  # noqa: F401
 from app.models.report import Report  # noqa: F401
 from app.models.sample import Sample  # noqa: F401
 from app.models.site import Site  # noqa: F401
 from app.models.user import User  # noqa: F401
 
-__all__ = ["User", "Site", "Sample", "Report", "FieldDefinition"]
+__all__ = [
+    "User",
+    "Site",
+    "Sample",
+    "Report",
+    "FieldDefinition",
+    "RefreshToken",
+    "PasswordResetToken",
+]

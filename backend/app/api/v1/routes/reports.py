@@ -8,21 +8,24 @@ permission guarantees (scoped through the parent sample's site).
 NOTE on naming: `sample_pk` is the sample row's UUID (Sample.id), kept
 distinct from `sample_id` the business field, same convention as in
 app/api/v1/routes/samples.py.
+
+Upload is the one Celery-backed endpoint here — list/download-url/delete
+stay synchronous since they're fast single-row operations that don't
+benefit from being backgrounded, and instant feedback matters more for
+them than for a multi-file upload.
 """
-import io
 import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, File, UploadFile
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_accessible_site_ids, require_any_role
 from app.core.config import get_settings
-from app.core.exceptions import ValidationAppError
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.report import ReportDownloadResponse, ReportRead
+from app.schemas.task import TaskEnqueuedResponse
 from app.services import report_service, sample_service
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -30,24 +33,6 @@ settings = get_settings()
 
 MAX_REPORT_SIZE_MB = 25
 ALLOWED_CONTENT_TYPES = {"application/pdf"}
-
-
-class ReportUploadError(BaseModel):
-    file_name: str
-    error: str
-
-
-class BulkReportUploadResponse(BaseModel):
-    """
-    Per-file result for a multi-file upload: this is what actually fixes
-    "can only upload one report at a time" — the frontend now sends every
-    selected file in a single request, and each is validated/stored
-    independently so one bad file (wrong type, too large) doesn't block
-    the rest from succeeding.
-    """
-
-    uploaded: List[ReportRead]
-    errors: List[ReportUploadError]
 
 
 @router.get("/by-sample/{sample_pk}", response_model=list[ReportRead])
@@ -61,48 +46,41 @@ def list_reports(
     return report_service.list_reports_for_sample(db, sample)
 
 
-@router.post("/by-sample/{sample_pk}", response_model=BulkReportUploadResponse, status_code=201)
+@router.post("/by-sample/{sample_pk}", response_model=TaskEnqueuedResponse, status_code=202)
 async def upload_reports(
     sample_pk: uuid.UUID,
     files: List[UploadFile] = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_any_role),
 ):
-    """Accepts one or more PDF files in a single request (multipart field name "files", repeated)."""
-    sample = sample_service.get_sample(db, current_user, sample_pk)
+    """
+    Accepts one or more PDF files (multipart field name "files",
+    repeated) and enqueues a single Celery task that uploads all of them
+    to R2 — the fix for "can only upload one report at a time" plus
+    moving the R2 I/O off the request thread. Poll GET /tasks/{task_id};
+    the result contains per-file uploaded/errors breakdown, same shape
+    the old synchronous response had.
+    """
+    # get_sample enforces access before we even read file bytes, so a
+    # caller without access to this sample gets a 403/404 immediately
+    # rather than after uploading potentially large files for nothing.
+    sample_service.get_sample(db, current_user, sample_pk)
 
-    uploaded: List[ReportRead] = []
-    errors: List[ReportUploadError] = []
-
+    file_payloads = []
     for file in files:
-        file_name = file.filename or "report.pdf"
-        try:
-            if file.content_type not in ALLOWED_CONTENT_TYPES:
-                raise ValidationAppError(
-                    f"Unsupported file type '{file.content_type}'. Only PDF reports are accepted."
-                )
+        contents = await file.read()
+        file_payloads.append(
+            {
+                "file_name": file.filename or "report.pdf",
+                "content_type": file.content_type,
+                "content_hex": contents.hex(),
+            }
+        )
 
-            contents = await file.read()
-            size_mb = len(contents) / (1024 * 1024)
-            if size_mb > MAX_REPORT_SIZE_MB:
-                raise ValidationAppError(f"File exceeds the {MAX_REPORT_SIZE_MB}MB limit.")
+    from app.tasks.report_tasks import upload_reports_task
 
-            report = report_service.upload_report(
-                db,
-                sample,
-                current_user,
-                file_obj=io.BytesIO(contents),
-                filename=file_name,
-                content_type=file.content_type,
-                file_size_bytes=len(contents),
-            )
-            uploaded.append(report)
-        except ValidationAppError as exc:
-            errors.append(ReportUploadError(file_name=file_name, error=exc.message))
-        except Exception as exc:  # noqa: BLE001 — one bad file must not block the rest of the batch
-            errors.append(ReportUploadError(file_name=file_name, error=str(exc)))
-
-    return BulkReportUploadResponse(uploaded=uploaded, errors=errors)
+    task = upload_reports_task.delay(str(current_user.id), str(sample_pk), file_payloads)
+    return TaskEnqueuedResponse(task_id=task.id)
 
 
 @router.get("/{report_id}/download-url", response_model=ReportDownloadResponse)

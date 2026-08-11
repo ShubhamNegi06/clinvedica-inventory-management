@@ -1,33 +1,37 @@
-"""Excel export route — streams the generated workbook as a file download."""
-import uuid
+"""
+Excel export route — enqueues a Celery task and returns its task ID
+immediately rather than streaming the (potentially 10k-row) workbook
+synchronously. Poll GET /tasks/{task_id}; on SUCCESS the result contains
+a short-lived signed R2 download URL.
+"""
 from typing import List, Optional
+import uuid
 
 from fastapi import APIRouter, Depends, Query
-from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
 
 from app.api.deps import require_any_role
 from app.api.v1.routes.samples import _parse_field_filters
-from app.db.session import get_db
 from app.models.user import User
-from app.services import export_service
+from app.schemas.task import TaskEnqueuedResponse
 
 router = APIRouter(prefix="/samples/export", tags=["samples"])
 
 
-@router.get("")
+@router.get("", response_model=TaskEnqueuedResponse, status_code=202)
 def export_samples(
     site_id: Optional[uuid.UUID] = Query(default=None),
     field_filter: Optional[List[str]] = Query(default=None),
     search: Optional[str] = Query(default=None),
-    db: Session = Depends(get_db),
     current_user: User = Depends(require_any_role),
 ):
-    buffer = export_service.export_samples_to_excel(
-        db, current_user, site_id=site_id, field_filters=_parse_field_filters(field_filter), search=search
+    filters = _parse_field_filters(field_filter)
+
+    from app.tasks.export_tasks import export_samples_task
+
+    task = export_samples_task.delay(
+        str(current_user.id),
+        str(site_id) if site_id else None,
+        [{"field_key": f.field_key, "value": f.value} for f in filters],
+        search,
     )
-    return StreamingResponse(
-        buffer,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=specimen_inventory_export.xlsx"},
-    )
+    return TaskEnqueuedResponse(task_id=task.id)

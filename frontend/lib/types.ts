@@ -104,6 +104,43 @@ export interface ApiErrorPayload {
   row_errors?: Array<{ sheet?: string; row: number; error: string; sample_id?: string }>;
 }
 
+// --- Background tasks (Celery) ---
+
+/** Celery's own task states — the frontend polls until SUCCESS or FAILURE. */
+export type TaskStatus = "PENDING" | "STARTED" | "RETRY" | "SUCCESS" | "FAILURE";
+
+export interface TaskEnqueuedResponse {
+  task_id: string;
+  status: TaskStatus;
+}
+
+export interface TaskStatusResponse {
+  task_id: string;
+  status: TaskStatus;
+  progress?: { stage?: string; total?: number } | null;
+  result?: unknown;
+  error?: string | null;
+}
+
+export interface ExportTaskResult {
+  download_url: string;
+  file_name: string;
+}
+
+export interface BulkIngestTaskResult {
+  success: boolean;
+  created_count?: number;
+  created_sample_ids?: string[];
+  row_errors?: Array<{ sheet?: string; row: number; error: string; sample_id?: string }>;
+  error_code?: string;
+  message?: string;
+}
+
+export interface ReportUploadTaskResult {
+  uploaded: Array<{ id: string; file_name: string }>;
+  errors: Array<{ file_name: string; error: string }>;
+}
+
 export const SECTION_ORDER = [
   "case_details",
   "demographic_details",

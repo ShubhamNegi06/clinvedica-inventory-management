@@ -4,16 +4,11 @@ import { useEffect, useState, ChangeEvent } from "react";
 import { useSearchParams } from "next/navigation";
 import { RoleGate } from "@/components/RoleGate";
 import { Field, Select } from "@/components/FormFields";
-import { listSites, bulkIngestSamples } from "@/lib/resources";
+import { listSites, startBulkIngest } from "@/lib/resources";
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/authContext";
-import type { Site } from "@/lib/types";
-
-interface IngestResult {
-  created_count: number;
-  created_sample_ids: string[];
-  row_errors: Array<{ sheet?: string; row: number; error: string; sample_id?: string }>;
-}
+import { useTaskPolling } from "@/lib/useTaskPolling";
+import type { BulkIngestTaskResult, Site } from "@/lib/types";
 
 function BulkUploadContent() {
   const { user } = useAuth();
@@ -22,9 +17,9 @@ function BulkUploadContent() {
 
   const [sites, setSites] = useState<Site[]>([]);
   const [siteId, setSiteId] = useState(searchParams.get("site_id") ?? user?.site_id ?? "");
-  const [uploading, setUploading] = useState(false);
-  const [result, setResult] = useState<IngestResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
+  const task = useTaskPolling<BulkIngestTaskResult>(taskId);
 
   useEffect(() => {
     if (isManagerOrAdmin) listSites().then(setSites);
@@ -33,24 +28,30 @@ function BulkUploadContent() {
   async function handleFile(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file || !siteId) return;
-    setUploading(true);
-    setError(null);
-    setResult(null);
+    setStartError(null);
     try {
-      const res = await bulkIngestSamples(siteId, file);
-      setResult(res);
+      // Starts the Celery task and gets a task ID back immediately —
+      // parsing/validating up to 5,000 rows happens in the background,
+      // not on this request. The file input is disabled while a task is
+      // in flight (task.isRunning below) to prevent duplicate submissions.
+      const { task_id } = await startBulkIngest(siteId, file);
+      setTaskId(task_id);
     } catch (err) {
-      if (err instanceof ApiError) {
-        setError(err.message);
-        if (err.rowErrors) setResult({ created_count: 0, created_sample_ids: [], row_errors: err.rowErrors });
-      } else {
-        setError("Bulk upload failed.");
-      }
+      setStartError(err instanceof ApiError ? err.message : "Failed to start bulk upload.");
     } finally {
-      setUploading(false);
       e.target.value = "";
     }
   }
+
+  const result = task.status === "SUCCESS" ? task.result : null;
+  const uploadStageLabel =
+    task.status === "PENDING"
+      ? "Queued…"
+      : task.status === "STARTED"
+      ? task.progress?.stage === "parsing_file"
+        ? "Parsing and validating rows…"
+        : "Processing…"
+      : "Click to select an .xlsx file";
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -61,13 +62,13 @@ function BulkUploadContent() {
         <code className="rounded bg-gray-100 px-1">Sample ID</code>,{" "}
         <code className="rounded bg-gray-100 px-1">Type of Tissue</code>, etc.). Both the{" "}
         <strong>Prospective</strong> and <strong>Remnant</strong> sheets are read automatically if both
-        are present.
+        are present. Processing happens in the background — you can navigate away and come back.
       </p>
 
       <div className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
         {isManagerOrAdmin && (
           <Field label="Site">
-            <Select value={siteId} onChange={(e) => setSiteId(e.target.value)}>
+            <Select value={siteId} onChange={(e) => setSiteId(e.target.value)} disabled={task.isRunning}>
               <option value="">Select a site…</option>
               {sites.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -81,33 +82,41 @@ function BulkUploadContent() {
         <label
           className={
             "flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 text-center " +
-            (siteId ? "border-gray-200 hover:border-brand/40" : "cursor-not-allowed border-gray-100 opacity-50")
+            (siteId && !task.isRunning ? "border-gray-200 hover:border-brand/40" : "cursor-not-allowed border-gray-100 opacity-50")
           }
         >
-          <p className="text-sm font-medium text-gray-700">
-            {uploading ? "Uploading and validating…" : "Click to select an .xlsx file"}
-          </p>
+          <p className="text-sm font-medium text-gray-700">{uploadStageLabel}</p>
           <p className="mt-1 text-xs text-gray-400">Up to 5,000 rows per file, across all sheets</p>
           <input
             type="file"
             accept=".xlsx,.xls"
             onChange={handleFile}
-            disabled={!siteId || uploading}
+            disabled={!siteId || task.isRunning}
             className="hidden"
           />
         </label>
       </div>
 
-      {error && <div className="mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+      {startError && <div className="mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{startError}</div>}
+
+      {task.status === "FAILURE" && (
+        <div className="mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+          Bulk upload failed: {task.error}
+        </div>
+      )}
 
       {result && (
         <div className="mt-6 rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
-          <p className="mb-3 text-sm font-semibold text-green-700">
-            {result.created_count} sample{result.created_count === 1 ? "" : "s"} created successfully.
-          </p>
-          {result.row_errors.length > 0 && (
+          {!result.success ? (
+            <p className="text-sm font-semibold text-red-700">{result.message || "Bulk upload failed."}</p>
+          ) : (
+            <p className="mb-3 text-sm font-semibold text-green-700">
+              {result.created_count} sample{result.created_count === 1 ? "" : "s"} created successfully.
+            </p>
+          )}
+          {result.row_errors && result.row_errors.length > 0 && (
             <>
-              <p className="mb-2 text-sm font-semibold text-red-700">
+              <p className="mb-2 mt-3 text-sm font-semibold text-red-700">
                 {result.row_errors.length} row{result.row_errors.length === 1 ? "" : "s"} failed:
               </p>
               <ul className="max-h-64 space-y-1 overflow-y-auto text-xs text-gray-600">

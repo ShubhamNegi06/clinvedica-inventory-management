@@ -15,6 +15,7 @@ from app.api.v1.routes import (
     samples,
     sites,
     subjects,
+    tasks,
     users,
 )
 
@@ -33,3 +34,4 @@ router.include_router(reports.router)
 router.include_router(subjects.router)
 router.include_router(field_definitions.router)
 router.include_router(dashboard.router)
+router.include_router(tasks.router)
