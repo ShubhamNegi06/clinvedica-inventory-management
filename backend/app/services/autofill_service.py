@@ -4,7 +4,7 @@ Subject-ID autofill.
 Two endpoints power this feature on the frontend:
   1. suggestions(q) — type-ahead list of matching subject_ids as the
      user types, scoped to sites they can access.
-  2. autofill_for_subject(subject_id) — once a match is picked/typed
+  2. autofill_for_subject(subject_code) — once a match is picked/typed
      fully, returns the most recent sample's custom_fields so the form
      can pre-populate fields flagged `is_autofill=True` on
      FieldDefinition.
@@ -37,7 +37,7 @@ def autofill_for_subject(db: Session, current_user: User, subject_id: str) -> Op
     """
     Returns only the fields marked is_autofill=True on FieldDefinition,
     pulled from the most recently created sample with a matching
-    subject_id. Returns None if no prior sample exists for this subject
+    subject_code. Returns None if no prior sample exists for this subject
     (i.e. this is a genuinely new subject — nothing to prefill).
     """
     accessible = get_accessible_site_ids(current_user, db)

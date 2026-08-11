@@ -11,14 +11,6 @@ export type SiteType = "partner_site" | "manager_owned";
 
 export type ReportType = "original" | "masked";
 
-export type SampleType =
-  | "ffpe"
-  | "frozen_tumor"
-  | "serum"
-  | "plasma"
-  | "whole_blood"
-  | "other";
-
 export interface AppUser {
   id: string;
   email: string;
@@ -43,13 +35,20 @@ export interface Site {
   created_at: string;
 }
 
+/**
+ * `id` is the database row's UUID (primary key) — distinct from
+ * `sample_id`, which is the business field matching the Excel template's
+ * "Sample ID" column (e.g. "GB-01FFPE1"). Same distinction applies to
+ * `subject_id` ("Subject ID" column, e.g. "GB-01"). Every other template
+ * field (Type of Tissue, Age, Gender, Grade, Stage, Sample Type, Tumor %,
+ * HIV/HBV/HCV, etc.) lives in custom_fields, keyed by field_key from
+ * FieldDefinition.
+ */
 export interface Sample {
   id: string;
   site_id: string;
   subject_id: string;
   sample_id: string;
-  sample_type: SampleType | null;
-  tags: string[];
   custom_fields: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -62,9 +61,15 @@ export interface SampleListResponse {
   page_size: number;
 }
 
+/** One key:value filter against a sample's custom_fields, e.g. { field_key: "tumor-percent", value: "60" }. */
+export interface FieldFilter {
+  field_key: string;
+  value: string;
+}
+
 export interface Report {
   id: string;
-  sample_id: string;
+  sample_pk: string; // the parent sample row's UUID — see Sample.id
   site_id: string;
   file_name: string;
   file_size_bytes: number | null;
@@ -96,7 +101,7 @@ export interface ApiErrorPayload {
   error_code: string;
   message: string;
   field?: string;
-  row_errors?: Array<{ row: number; error: string; sample_id?: string }>;
+  row_errors?: Array<{ sheet?: string; row: number; error: string; sample_id?: string }>;
 }
 
 export const SECTION_ORDER = [

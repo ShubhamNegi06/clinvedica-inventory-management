@@ -8,6 +8,7 @@ import type {
   AppUser,
   DashboardStats,
   FieldDefinition,
+  FieldFilter,
   Report,
   Sample,
   SampleListResponse,
@@ -48,40 +49,53 @@ export const setTemporaryPassword = (userId: string) =>
   apiRequest<{ temporary_password: string }>(`/users/${userId}/set-temporary-password`, { method: "POST" });
 
 // --- Samples ---
+// `field_filters` are key:value pairs against custom_fields (e.g.
+// { field_key: "tumor-percent", value: "60" }), sent to the backend as
+// repeated "field_filter=key:value" query params — NOT freeform tags.
 export interface SampleListParams {
   site_id?: string;
-  tags?: string[];
+  field_filters?: FieldFilter[];
   search?: string;
   page?: number;
   page_size?: number;
 }
-export const listSamples = (params: SampleListParams = {}) =>
-  apiRequest<SampleListResponse>("/samples", { query: { ...params } });
 
-export const getSample = (sampleId: string) => apiRequest<Sample>(`/samples/${sampleId}`);
+function toFieldFilterQuery(filters?: FieldFilter[]): string[] | undefined {
+  if (!filters || filters.length === 0) return undefined;
+  return filters.map((f) => `${f.field_key}:${f.value}`);
+}
+
+export const listSamples = (params: SampleListParams = {}) =>
+  apiRequest<SampleListResponse>("/samples", {
+    query: {
+      site_id: params.site_id,
+      field_filter: toFieldFilterQuery(params.field_filters),
+      search: params.search,
+      page: params.page,
+      page_size: params.page_size,
+    },
+  });
+
+export const getSample = (samplePk: string) => apiRequest<Sample>(`/samples/${samplePk}`);
 
 export const createSample = (payload: {
   site_id: string;
   subject_id: string;
   sample_id: string;
-  sample_type?: string;
-  tags?: string[];
   custom_fields?: Record<string, unknown>;
 }) => apiRequest<Sample>("/samples", { method: "POST", body: payload });
 
 export const updateSample = (
-  sampleId: string,
+  samplePk: string,
   payload: Partial<{
     subject_id: string;
     sample_id: string;
-    sample_type: string;
-    tags: string[];
     custom_fields: Record<string, unknown>;
   }>
-) => apiRequest<Sample>(`/samples/${sampleId}`, { method: "PATCH", body: payload });
+) => apiRequest<Sample>(`/samples/${samplePk}`, { method: "PATCH", body: payload });
 
-export const deleteSample = (sampleId: string) =>
-  apiRequest<void>(`/samples/${sampleId}`, { method: "DELETE" });
+export const deleteSample = (samplePk: string) =>
+  apiRequest<void>(`/samples/${samplePk}`, { method: "DELETE" });
 
 export const bulkIngestSamples = (siteId: string, file: File) => {
   const formData = new FormData();
@@ -89,21 +103,35 @@ export const bulkIngestSamples = (siteId: string, file: File) => {
   return apiRequest<{
     created_count: number;
     created_sample_ids: string[];
-    row_errors: Array<{ row: number; error: string; sample_id?: string }>;
+    row_errors: Array<{ sheet?: string; row: number; error: string; sample_id?: string }>;
   }>(`/samples/bulk-ingest/${siteId}`, { method: "POST", body: formData, isFormData: true });
 };
 
 export const exportSamples = (params: SampleListParams = {}) =>
-  apiDownload("/samples/export", { ...params });
+  apiDownload("/samples/export", {
+    site_id: params.site_id,
+    field_filter: toFieldFilterQuery(params.field_filters),
+    search: params.search,
+  });
 
 // --- Reports ---
-export const listReportsForSample = (sampleId: string) =>
-  apiRequest<Report[]>(`/reports/by-sample/${sampleId}`);
+export const listReportsForSample = (samplePk: string) =>
+  apiRequest<Report[]>(`/reports/by-sample/${samplePk}`);
 
-export const uploadReport = (sampleId: string, file: File) => {
+/**
+ * Uploads one or more PDF reports in a SINGLE request — this is what
+ * fixes "can only upload one report at a time": every selected file is
+ * appended under the same "files" field and sent together, and the
+ * backend validates/stores each independently so one bad file doesn't
+ * block the rest.
+ */
+export const uploadReports = (samplePk: string, files: File[]) => {
   const formData = new FormData();
-  formData.append("file", file);
-  return apiRequest<Report>(`/reports/by-sample/${sampleId}`, {
+  files.forEach((file) => formData.append("files", file));
+  return apiRequest<{
+    uploaded: Report[];
+    errors: Array<{ file_name: string; error: string }>;
+  }>(`/reports/by-sample/${samplePk}`, {
     method: "POST",
     body: formData,
     isFormData: true,
@@ -123,7 +151,7 @@ export const listFieldDefinitions = () => apiRequest<FieldDefinition[]>("/field-
 export const getSubjectSuggestions = (q: string) =>
   apiRequest<{ suggestions: string[] }>("/subjects/suggestions", { query: { q } });
 
-export const getSubjectAutofill = (subjectCode: string) =>
+export const getSubjectAutofill = (subjectId: string) =>
   apiRequest<{ found: boolean; custom_fields: Record<string, unknown> }>(
-    `/subjects/${encodeURIComponent(subjectCode)}/autofill`
+    `/subjects/${encodeURIComponent(subjectId)}/autofill`
   );

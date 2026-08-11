@@ -12,7 +12,7 @@ import type { Site } from "@/lib/types";
 interface IngestResult {
   created_count: number;
   created_sample_ids: string[];
-  row_errors: Array<{ row: number; error: string; sample_id?: string }>;
+  row_errors: Array<{ sheet?: string; row: number; error: string; sample_id?: string }>;
 }
 
 function BulkUploadContent() {
@@ -56,10 +56,12 @@ function BulkUploadContent() {
     <div className="mx-auto max-w-2xl">
       <h1 className="mb-2 text-2xl font-semibold text-gray-900">Bulk Upload</h1>
       <p className="mb-6 text-sm text-gray-500">
-        Upload an Excel file with <code className="rounded bg-gray-100 px-1">subject_id</code> and{" "}
-        <code className="rounded bg-gray-100 px-1">sample_id</code> columns (required), plus{" "}
-        <code className="rounded bg-gray-100 px-1">sample_type</code>, <code className="rounded bg-gray-100 px-1">tags</code>,
-        and any additional field columns.
+        Upload the Clinvedica Excel template exactly as-is — column headers must match the template
+        (<code className="rounded bg-gray-100 px-1">Subject ID</code>,{" "}
+        <code className="rounded bg-gray-100 px-1">Sample ID</code>,{" "}
+        <code className="rounded bg-gray-100 px-1">Type of Tissue</code>, etc.). Both the{" "}
+        <strong>Prospective</strong> and <strong>Remnant</strong> sheets are read automatically if both
+        are present.
       </p>
 
       <div className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
@@ -85,7 +87,7 @@ function BulkUploadContent() {
           <p className="text-sm font-medium text-gray-700">
             {uploading ? "Uploading and validating…" : "Click to select an .xlsx file"}
           </p>
-          <p className="mt-1 text-xs text-gray-400">Up to 5,000 rows per file</p>
+          <p className="mt-1 text-xs text-gray-400">Up to 5,000 rows per file, across all sheets</p>
           <input
             type="file"
             accept=".xlsx,.xls"
@@ -111,7 +113,8 @@ function BulkUploadContent() {
               <ul className="max-h-64 space-y-1 overflow-y-auto text-xs text-gray-600">
                 {result.row_errors.map((re, i) => (
                   <li key={i} className="rounded bg-red-50 px-2 py-1">
-                    Row {re.row}{re.sample_id ? ` (${re.sample_id})` : ""}: {re.error}
+                    {re.sheet ? `[${re.sheet}] ` : ""}Row {re.row}
+                    {re.sample_id ? ` (${re.sample_id})` : ""}: {re.error}
                   </li>
                 ))}
               </ul>

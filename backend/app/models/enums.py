@@ -32,11 +32,9 @@ class ReportType(str, enum.Enum):
     ORIGINAL = "original"
     MASKED = "masked"
 
-
-class SampleType(str, enum.Enum):
-    FFPE = "ffpe"
-    FROZEN_TUMOR = "frozen_tumor"
-    SERUM = "serum"
-    PLASMA = "plasma"
-    WHOLE_BLOOD = "whole_blood"
-    OTHER = "other"
+# NOTE: a SampleType enum (ffpe/frozen_tumor/serum/plasma/whole_blood/other)
+# used to live here. It was removed — it didn't match the real Excel
+# template, which has "Type of Tissue" (Tumor/NAT) and "Sample Type"
+# (e.g. "FFPE Block") as free-text template fields, not a fixed backend
+# enum. Both now live in Sample.custom_fields like every other template
+# column. See migration 0002_align_with_template.

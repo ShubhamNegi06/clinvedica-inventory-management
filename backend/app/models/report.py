@@ -24,7 +24,10 @@ class Report(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    sample_id: Mapped[uuid.UUID] = mapped_column(
+    # FK to the sample row's UUID primary key — named sample_pk (not
+    # sample_id) to avoid colliding with the business "Sample ID" field
+    # that lives on Sample.sample_id (the template's "Sample ID" column).
+    sample_pk: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("samples.id", ondelete="CASCADE"), nullable=False, index=True
     )
     # Denormalized for fast permission checks / dashboard counts without a

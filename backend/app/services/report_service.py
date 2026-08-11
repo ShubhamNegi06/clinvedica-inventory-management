@@ -27,7 +27,7 @@ logger = logging.getLogger("specimen_inventory.reports")
 
 
 def list_reports_for_sample(db: Session, sample: Sample) -> List[Report]:
-    stmt = select(Report).where(Report.sample_id == sample.id).order_by(Report.created_at.desc())
+    stmt = select(Report).where(Report.sample_pk == sample.id).order_by(Report.created_at.desc())
     return list(db.execute(stmt).scalars().all())
 
 
@@ -45,7 +45,7 @@ def upload_report(
 
     report = Report(
         id=uuid.uuid4(),
-        sample_id=sample.id,
+        sample_pk=sample.id,
         site_id=sample.site_id,
         file_key=object_key,
         file_name=filename,
@@ -87,14 +87,14 @@ def delete_report(db: Session, report: Report) -> None:
     db.commit()
 
 
-def purge_reports_for_sample(db: Session, sample_id: uuid.UUID) -> None:
+def purge_reports_for_sample(db: Session, sample_pk: uuid.UUID) -> None:
     """
     Deletes every report (R2 object + DB row) belonging to a sample.
     Called synchronously as part of sample deletion — see
     sample_service.soft_delete_sample. Each object's failure is logged
     individually so a single bad delete doesn't silently swallow the rest.
     """
-    stmt = select(Report).where(Report.sample_id == sample_id)
+    stmt = select(Report).where(Report.sample_pk == sample_pk)
     reports = list(db.execute(stmt).scalars().all())
 
     for report in reports:

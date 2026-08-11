@@ -9,17 +9,20 @@ import {
   getSample,
   deleteSample,
   listReportsForSample,
-  uploadReport,
+  uploadReports,
   getReportDownloadUrl,
   deleteReport,
   listFieldDefinitions,
 } from "@/lib/resources";
 import { groupFieldsBySections } from "@/lib/fieldSections";
 import { ApiError } from "@/lib/api";
-import type { Sample, Report, FieldDefinition } from "@/lib/types";
+import type { Sample, Report } from "@/lib/types";
 import type { FieldSection } from "@/lib/fieldSections";
 
 function SampleDetailContent() {
+  // Route segment is still named [sampleId] but holds the sample ROW's
+  // UUID (Sample.id) — not the business "Sample ID" field, same
+  // distinction the backend makes with sample_pk. See lib/types.ts.
   const params = useParams<{ sampleId: string }>();
   const router = useRouter();
 
@@ -30,6 +33,7 @@ function SampleDetailContent() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [uploadErrors, setUploadErrors] = useState<Array<{ file_name: string; error: string }>>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -61,15 +65,21 @@ function SampleDetailContent() {
   }
 
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
     setUploading(true);
     setError(null);
+    setUploadErrors([]);
     try {
-      await uploadReport(params.sampleId, file);
+      // Every selected file goes in ONE request — this is the fix for
+      // "can only upload one report at a time". Files that individually
+      // fail (wrong type, too large) are reported without blocking the
+      // ones that succeeded.
+      const res = await uploadReports(params.sampleId, files);
+      if (res.errors.length > 0) setUploadErrors(res.errors);
       await load();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to upload report.");
+      setError(err instanceof ApiError ? err.message : "Failed to upload reports.");
     } finally {
       setUploading(false);
       e.target.value = "";
@@ -111,31 +121,11 @@ function SampleDetailContent() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <SectionCard title="Sample Information">
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <p className="text-gray-500">Sample Type</p>
-                <p className="font-medium text-gray-900">{sample.sample_type ?? "—"}</p>
-              </div>
-              <div>
-                <p className="text-gray-500">Tags</p>
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {sample.tags.length === 0 && <span className="text-gray-400">—</span>}
-                  {sample.tags.map((t) => (
-                    <span key={t} className="rounded-full bg-peach-50 px-2 py-0.5 text-xs text-brand">
-                      {t}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </SectionCard>
-
           {sections.map((section) => {
             const populated = section.fields.filter((f) => sample.custom_fields[f.field_key]);
             if (populated.length === 0) return null;
             return (
-              <SectionCard key={section.key} title={section.label} defaultOpen={false}>
+              <SectionCard key={section.key} title={section.label} defaultOpen={section.key === "case_details"}>
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   {populated.map((f) => (
                     <div key={f.field_key}>
@@ -154,10 +144,28 @@ function SampleDetailContent() {
             <div className="mb-3 flex items-center justify-between">
               <p className="text-sm font-semibold text-gray-900">Reports</p>
               <label className="cursor-pointer text-xs font-medium text-brand hover:underline">
-                {uploading ? "Uploading…" : "+ Upload PDF"}
-                <input type="file" accept="application/pdf" onChange={handleUpload} className="hidden" disabled={uploading} />
+                {uploading ? "Uploading…" : "+ Upload PDFs"}
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  multiple
+                  onChange={handleUpload}
+                  className="hidden"
+                  disabled={uploading}
+                />
               </label>
             </div>
+
+            {uploadErrors.length > 0 && (
+              <div className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
+                {uploadErrors.map((e, i) => (
+                  <p key={i}>
+                    <strong>{e.file_name}:</strong> {e.error}
+                  </p>
+                ))}
+              </div>
+            )}
+
             {reports.length === 0 && <p className="text-sm text-gray-400">No reports uploaded yet.</p>}
             <ul className="space-y-2">
               {reports.map((r) => (

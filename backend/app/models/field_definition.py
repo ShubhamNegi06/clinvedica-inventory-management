@@ -28,6 +28,21 @@ SECTION_ORDER = [
 ]
 
 
+# Human-readable section titles, matching the Excel template exactly.
+# Single source of truth reused by both the export service (to write the
+# template's section-title row) and could be reused by any future
+# section-label needs server-side.
+SECTION_LABELS = {
+    "case_details": "Case Details",
+    "demographic_details": "Demographic Details",
+    "diagnosis_information": "Diagnosis Information",
+    "sample_information": "Sample Information",
+    "serology_report": "Serology Report",
+    "treatment_detail": "Treatment Detail",
+    "biomarker_characterization": "Biomarker Characterization",
+}
+
+
 class FieldDefinition(Base):
     __tablename__ = "field_definitions"
 
@@ -40,7 +55,7 @@ class FieldDefinition(Base):
     field_type: Mapped[str] = mapped_column(String(30), default="text")  # text | number | date | select
     display_order: Mapped[int] = mapped_column(Integer, default=0)
 
-    # Whether this field should be pre-filled when a matching subject_id
+    # Whether this field should be pre-filled when a matching subject_code
     # is found (see the Subject ID Autofill feature).
     is_autofill: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
